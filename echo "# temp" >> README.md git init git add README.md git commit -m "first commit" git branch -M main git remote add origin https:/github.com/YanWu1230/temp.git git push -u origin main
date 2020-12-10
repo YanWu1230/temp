@@ -1,0 +1,398 @@
+function buildDefectRateGraph(metric, network, chartId) {
+            var showDelta = false;
+            var showYoYDelta = false;
+            var showLastYear = false;
+            var show52week = false;
+            var showCompare = false;
+            var showNotes = false;
+            var countrycode = ['US'];
+            var counterReceived = 0;
+            var counterSent = 0;
+            var dataAggregator = [];
+            $('#' + chartId).empty();
+            toggleLoading('#' + chartId);
+            var completedCount = 0;
+            if (completedCount === 0) {
+                dataAggregator = [];
+            }
+
+            selectedYears = retrieveChecked('#fyListOptions');
+
+            var IsAddedConversionNotes = false;
+            var IsAddedSideBottomAdsNotes = false;
+            StartTime = new Date();
+            StartTime_Time = StartTime.getHours() + ':' + StartTime.getMinutes() + ':' + StartTime.getSeconds();
+
+            var selectedGrain = getCurrentlySelectedGrain(chartId);
+            document.getElementById('hPublishers').value = network.toString(); //networks
+
+            document.getElementById("hMetrics").value = metric;
+            document.getElementById("hGrain").value = selectedGrain;
+            //selectedMarkets = ['US'];
+            selectedMarkets = retrieveChecked('#grainDropDown');
+            document.getElementById("hCountry").value = selectedMarkets[0]; 
+            document.getElementById("hStartDate").value = '2012-07-01';
+            document.getElementById("hEndDate").value = getCurrentDate();
+
+            //v-vinsan : Before making the requests I'm going to clear the notes div and hide it.
+            var dataValidator = new UpToDateViewValidator();
+            var blnMarketplaceKPIValidated = false;
+            var blnPxMLIYValidated = false;
+            var blnPxMLIYBingValidated = false;
+            var blnAppPxMLIYValidated = false;
+            var blnQBRValidated = false;
+            var blnTacValidated = false;
+            var blnDAPValidated = false;
+
+            dataValidator.resetNotes();
+
+            for (var year in selectedYears) {
+                var fyStart = outputDate(new Date(selectedYears[year] - 1, 7 - 1, 1));
+                var fyEnd = outputDate(new Date(selectedYears[year], 6 - 1, 30));
+
+                for (var market in selectedMarkets) {
+                    counterSent = counterSent + 1;
+
+                    amdServiceCallerSync(
+                        commonServiceURLS.GetKPIViewData, //service url string
+                        {
+                            publisher: network,
+                            entryPoint: 'All Partitions',
+                            trafficClass: 'Organic',
+                            metric: metric,
+                            grain: selectedGrain,
+                            country: selectedMarkets[market],
+                            startDate: fyStart,
+                            endDate: fyEnd,
+                            lTView: false,
+                            adjustedYear: 0,
+                            dowEventAlignment: false
+                        },
+                        function (obj) {
+                            completedCount++;
+                            safeLogger('dataset');
+                            safeLogger(obj);
+
+                            counterReceived = counterReceived + 1;
+                            if (counterReceived == counterSent) {
+                                $('.toDisable').removeAttr('disabled');
+                            }
+                            else {
+                                $('.toDisable').attr({ disabled: 'disabled' });
+
+                            }
+
+
+                            // v-jasfu:
+                            // This is important. We are using the publisher and trafficClass heavily
+                            // in the next sections.
+                            var dummyValue = null;                          // just for LT view
+                            var publisher = obj[0].Publisher;
+
+                            //Till Here
+
+                            var trafficClass = obj[0].TrafficClass;
+
+                            if (obj[0] !== null && obj[0] !== undefined && obj.length > 1) {
+                                safeLogger('mixing objects');
+
+
+                                /*
+                                    v-jasfu:
+                                    This section is here in case there are a leap year and non-leap year selected at the same time.
+                                    It will add a point of data at the index 122, which will fill the gap where Feb 29 is and will
+                                    align the rest of the dates of the year, fixing the off-by-one error. 
+                                    Does not apply if the grain is set to Monthly.
+                                */
+                                if ((($('#2012').prop('checked') || $('#2016').prop('checked')|| $('#2020').prop('checked')) && obj.length < 366)
+                                    && getCurrentlySelectedGrain(chartId) != 'Monthly') {
+                                    obj.splice(122, 0, {
+                                        ActualMetricValue: dummyValue,
+                                        CompareDelta: null,
+                                        CompareMetricValue: null,
+                                        Date: (new Date().toJSON()),
+                                        FiftyTwoWeekMetricValue: null,
+                                        ForecastDelta: null,
+                                        ForecastMetricValue: null,
+                                        IsWeekend: null,
+                                        PreviousYearActualMetricValue: null,
+                                        Publisher: null,
+                                        RequestedMetric: null,
+                                        YoYActualDelta: null
+                                    });
+                                }
+
+                                obj = reverseDataSet(obj);
+                                //this initiates the data aggregator
+                                if (dataAggregator.length < 1) {
+                                    for (var i = 0; i < obj.length; i++) {
+                                        dataAggregator.push({});
+                                    }
+                                }
+
+
+                                /* v-jasfu:
+                                      This resets the publisher to its pre-sproc state (since the sproc is handling the 
+                                      network and traffic class in separate columns / parameters. Uses the result of the 
+                                      sproc to accomplish this. 
+                                      used for basic data validation
+
+                                      if the traffic class isn't Original, then add it to the approprate place in 
+                                      the string (which currently looks like it's only after 'browse'). also remove the dash
+                                      this is also only if it doesn't already contain the traffic class in itself
+                                */
+                                if (trafficClass !== 'Original') {
+                                    if (trafficClass === 'Organic-ExcKind')
+                                        trafficClass = 'Organic Excl Kindle';
+                                    if (publisher.indexOf('Organic') === -1)
+                                        publisher = publisher.replace("Browse", "Browse " + trafficClass);
+                                    publisher = publisher.replace("-", "");
+                                }
+
+                                //Gets the 4 digit year, converts that to a string and sub strings the final 2 digits
+                                var fy = String((new Date(parseInt(obj[0].Date.substr(6)))).getFullYear() + 1).substr(2, 4);
+
+                                //-----------------------------------------------------------------------------------------------------
+                                //v-vinsan : validating data
+                                //-----------------------------------------------------------------------------------------------------
+                                var arrPxMLIYMetrics = ["PxMLIY", "PxMLCTR", "NonConduitPxMLIY", "LCMLIY"];
+                                var arrQBRMetrics = ["QBR", "QBRML", "DefectRate", "DefectRateML", "DefectRateFBS", "DefectRateALP", "DefectRateAC"];
+                                var arrPxMLIYBingMetrics = ["BingPxMLIY", "NonConduitBingPxMLIY", "TextPxMLIY", "BingTextPxMLIY", "PLAPxMLIY", "BingPLAPxMLIY"];
+                                var arrAppPxMLIYMetrics = ["AppBingPxMLIY"];
+                                var PXMLIY_BING_OFFSET = 2;
+
+                                var strCurrentKPI = obj[0].RequestedMetric;
+                                dataValidator.validateData(fy, "ActualMetricValue", obj, function () {
+                                    //v-vinsan : The order of these ifs is very important in order to not validate things more than once
+                                    if ($.inArray(strCurrentKPI, arrAppPxMLIYMetrics) != -1) {
+                                        if (blnAppPxMLIYValidated == false) {
+                                            dataValidator.checkDateOffset(PXMLIY_BING_OFFSET, "Approx PxMLIY", obj);
+                                            blnAppPxMLIYValidated = true;
+                                        }
+                                    }
+                                    else if ($.inArray(strCurrentKPI, arrPxMLIYBingMetrics) != -1) {
+                                        if (blnPxMLIYBingValidated == false) {
+                                            dataValidator.checkDateOffset(PXMLIY_BING_OFFSET, "PxMLIY (Michael Murray)", obj);
+                                            blnPxMLIYBingValidated = true;
+                                        }
+                                    }
+                                    else if ($.inArray(strCurrentKPI, arrPxMLIYMetrics) != -1) {
+                                        if (blnPxMLIYValidated == false) {
+                                            dataValidator.checkDateOffset(dataValidator.PxMLIY_OFFSET, "PxMLIY", obj);
+                                            blnPxMLIYValidated = true;
+                                        }
+                                    }
+                                    else if (obj[0].Publisher.indexOf("Tac") > -1) {
+                                        if (blnTacValidated == false) {
+                                            dataValidator.checkDateOffset(dataValidator.TAC_OFFSET, "Tac & Non-Tac", obj);
+                                            blnTacValidated = true;
+                                        }
+                                    }
+                                    else if (obj[0].Publisher.indexOf("Dap") > -1) {
+                                        if (blnDAPValidated == false) {
+                                            dataValidator.checkDateOffset(dataValidator.DAP_OFFSET, "Dap & Non-Dap", obj);
+                                            blnDAPValidated = true;
+                                        }
+                                    }
+                                    else if (obj[0].Publisher.indexOf("Brand") > -1) {
+                                        if (blnDAPValidated == false) {
+                                            dataValidator.checkDateOffset(dataValidator.BRAND_OFFSET, "Brand & Non Brand", obj);
+                                            blnDAPValidated = true;
+                                        }
+                                    }
+                                    else if ($.inArray(strCurrentKPI, arrQBRMetrics) != -1) {
+                                        if (blnQBRValidated == false) {
+                                            dataValidator.checkDateOffset(dataValidator.QBR_OFFSET, "QBR & Defect Rate", obj);
+                                            blnQBRValidated = true;
+                                            $('#divUpToDateNotes').find('ul').append("<li>QBR & Bing QBR data is not available from Nov 5th 2015 to Nov 11th 2015, we are working with upstream owners to resolve this.</li>");
+                                        }
+                                    }
+                                    else if (blnMarketplaceKPIValidated == false) {
+                                        if (blnMarketplaceKPIValidated == false) {
+                                            dataValidator.checkDateOffset(dataValidator.MARKET_METRIC_OFFSET, "Marketplace KPIs", obj);
+                                            blnMarketplaceKPIValidated = true;
+
+                                            safeLogger("Validated MarketPlace KPI with" + strCurrentKPI);
+                                        }
+                                    }
+
+                                    if ((strCurrentKPI == 'Conversions' || strCurrentKPI == 'ConversionEnabledClicks') && !IsAddedConversionNotes) {
+                                        $('#divUpToDateNotes').find('ul').append("<li>The data for diluted conversions/conversion enabled clicks are based on UET tag since Sep 1st  2015, and prior to that is legacy conversions.</li>");
+                                        IsAddedConversionNotes = true;
+                                    }
+                                    if (($('.js_sideBottomAds').is(':checked')) && !IsAddedSideBottomAdsNotes) {
+                                        $('#divUpToDateNotes').find('ul').append("<li>Mainstream the tuning flight by increasing  bottom ads  on March 1, 2018.</li>");
+                                        IsAddedSideBottomAdsNotes = true;
+                                    }
+                                });
+                                //-----------------------------------------------------------------------------------------------------
+
+                                //Add FY to beginning of 2 digit year
+                                fy = 'FY' + fy;
+
+                                var prefix = obj[0].RequestedMetric;
+                                if (prefix == 'Volume')
+                                    prefix = 'SRPVs';
+
+                                publisher = parsePub(publisher);
+
+
+                                if ((
+                                    //($('.dayofweek').prop('checked') ) ||                                                
+                                    ($('#mlkDay').prop('checked')) ||
+                                    ($('#presidentsDay').prop('checked')) ||
+                                    ($('#taxDay').prop('checked')) ||
+                                    ($('#mothersDay').prop('checked')) ||
+                                    ($('#memorialDay').prop('checked')) ||
+                                    ($('#fathersDay').prop('checked')) ||
+                                    ($('#laborDay').prop('checked')) ||
+                                    ($('#columbusDay').prop('checked')) ||
+                                    ($('#thanksgiving').prop('checked'))) &&
+                                    (($('input[name="grain"]:checked').val() === 'Daily') ||
+                                        ($('input[name="grain"]:checked').val() === '7Day'))) {
+                                    var shiftCount = 0;
+                                    var shiftList = [];
+
+                                    //assign shifts based on holiday
+                                    //should be moved into db sproc in future when time allows
+                                    //shifts are earliest to latest fiscal year, Eg: 2011 = shiftlist[0] [..] 2013 = shiftlist[3]. 
+                                    //the lowest date in a set of dates for a given event is given a 0 shift
+                                    //Eg:
+                                    var blnEventAlignment = false;
+                                    if ($('.dayofweek').prop('checked')) {
+                                        shiftList = [6, 5, 4, 3, 2, 1, 0];
+                                    } else if ($('#mlkDay').prop('checked')) {
+                                        shiftList = [1, 1, 6, 5, 4, 3, 1]; // working
+                                    } else if ($('#presidentsDay').prop('checked')) {
+                                        shiftList = [5, 6, 4, 3, 2, 1, 6]; // working
+                                    } else if ($('#taxDay').prop('checked')) {
+                                        shiftList = [3, 3, 1, 1, 1, 4, 3]; // working
+                                    } else if ($('#mothersDay').prop('checked')) {
+                                        shiftList = [1, 0, 6, 5, 4, 2, 7]; // working
+                                    } else if ($('#memorialDay').prop('checked')) {
+                                        shiftList = [6, 5, 4, 3, 2, 7, 5]; // working
+                                    } else if ($('#fathersDay').prop('checked')) {
+                                        shiftList = [5, 4, 3, 2, 8, 6, 4]; // working
+                                    } else if ($('#laborDay').prop('checked')) {
+                                        shiftList = [6, 5, 4, 3, 9, 7, 5];  // working
+                                    } else if ($('#columbusDay').prop('checked')) {
+                                        shiftList = [4, 3, 9, 8, 6, 5, 3]; // working
+                                    } else if ($('#thanksgiving').prop('checked')) {
+                                        shiftList = [3, 2, 0, 6, 5, 4, 2]; //working
+                                    } else {
+                                        //you should NEVER get here.
+                                        shiftList = [0, 0, 0, 0, 0];
+                                    }
+
+                                    //This now handles all the shifts, and no longer need to have an if year a then do this, ect...
+                                    shiftCount = shiftList[fy.substr(3, 1) - 1];
+
+                                    //realign arrays by cutting off the front of them
+                                    for (var i = 0; i < shiftCount; i++) {
+                                        obj.shift();
+                                    }
+                                }
+
+                                /*
+                                    conglomerate the data
+                                    v-jasfu:
+                                    this part copies the properties of obj into the dataAggregator, with everything after the "dataAggregator[i]," as 
+                                    a prefix. 
+                                */
+                                for (var i = 0; i < obj.length; i++) {
+                                    copyObject(obj[i], dataAggregator[i], fy + '_' + selectedMarkets[market] + '_' + publisher + '_' + prefix + '_');
+                                }
+
+
+                                $('#grid').empty();
+                            }
+                            if (completedCount === (selectedYears.length * selectedMarkets.length)) {
+                                var includeForcastData = false;
+                                showYoYDelta = $('#deltaYoYChecked').prop('checked');
+
+                                var targetCSVName = '';
+                                if (metric === 'DefectRateFBS') {
+                                    targetCSVName = 'FBS_CSV';
+                                } else if (metric === 'DefectRateQK') {
+                                    targetCSVName = 'QK_CSV';
+                                } else if (metric === 'DefectRateAC') {
+                                    targetCSVName = 'AC_CSV';
+                                } else if (metric === 'DefectRateALP') {
+                                    targetCSVName = 'ALP_CSV';
+                                } else if (metric === 'QBR') {
+                                    targetCSVName = 'QBR_CSV';
+                                } else if (metric === 'CY') {
+                                    targetCSVName = 'CY_CSV';
+                                } else if (metric === 'DefectRateML') {
+                                    targetCSVName = 'DRML_CSV';
+                                }
+
+                                if (!(targetCSVName.indexOf('QBR') > -1) && !(targetCSVName.indexOf('CY') > -1)) {
+                                    network += " Organic";
+                                }
+
+                                document.getElementById(targetCSVName).value = buildCSV(dataAggregator, showCompare, show52week, showYoYDelta, includeForcastData);
+
+                                chartBuilder.buildSliceAndDiceCharts(chartId, 'Date', dataAggregator, [network], [metric], selectedMarkets, selectedYears, showDelta, show52week, showCompare,
+                                    undefined, false, false, showYoYDelta, false, false, 0, false);
+
+                                if (metric === 'DefectRateFBS') {
+                                    FBSChartNeedsUpdate = false;
+                                } else if (metric === 'DefectRateQK') {
+                                    QKChartNeedsUpdate = false;
+                                } else if (metric === 'DefectRateAC') {
+                                    ACChartNeedsUpdate = false;
+                                } else if (metric === 'DefectRateALP') {
+                                    ALPChartNeedsUpdate = false;
+                                } if (metric === 'QBR') {
+                                    QBRChartNeedsUpdate = false;
+                                } else if (metric === 'CY') {
+                                    CYChartNeedsUpdate = false;
+                                }else if (metric === 'DefectRateML') {
+                                    DRMLChartNeedsUpdate = false;
+                                }
+                                //$('#loadingFBS').hide();
+                                //v-vinsan : In this page there are instances where the notes would be empty. I'm hiding the div in this cases
+                                dataValidator.hideNotesIfEmpty();
+                                var EndTime = new Date();
+                                var EndTime_Time = EndTime.getHours() + ':' + EndTime.getMinutes() + ':' + EndTime.getSeconds();
+                                var pageloadtime = (EndTime.getTime() - StartTime.getTime()) / 1000;
+                                //if (user.indexOf('v-kamak') > -1 || user.indexOf('v-amagra') > -1 || user.indexOf('v-raman') > -1 || user.indexOf('v-nisha') > -1 || user.indexOf('v-vinsan') > -1 || user.indexOf('v-sowadh') > -1 || user.indexOf('v-ajes') > -1) {
+                                if (isAdhocTeamUser.toUpperCase() == 'TRUE') {
+                                    // Ignore if the user belong to internal Adhoc team
+                                }
+                                else {
+                                    var aggtype = getCurrentlySelectedGrain(chartId);
+                                    amdServiceCallerSync(commonServiceURLS.LogAccess,
+                                        {
+                                            user: username.value,
+                                            date: StartTime,
+                                            view: "Quality View",
+                                            dataSource: network,
+                                            metric: metric,
+                                            aggType: aggtype,
+                                            partition: "All Partitions",
+                                            trafficClass: "Organic",
+                                            market: selectedMarkets.toString(),
+                                            referrer: referrer,
+                                            startTime: StartTime_Time,
+                                            EndTime: EndTime_Time,
+                                            TotalPageLoadTime: pageloadtime
+                                        },
+                                        function (obj) {
+                                            safeLogger('Pass');
+                                        },
+                                        function (obj) {
+                                            safeLogger('error');
+                                        });
+                                }
+                            }
+                        },
+                        function (obj) {
+                            safeLogger('error');
+                            $('#' + chartId).hide();
+                        }
+                    );
+                }
+            }
+        }
